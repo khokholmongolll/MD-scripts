@@ -1,0 +1,9 @@
+papermill
+nbconvert
+jupyter
+MDAnalysis
+pandas
+numpy
+matplotlib
+seaborn
+pymol
