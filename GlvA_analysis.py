@@ -4,20 +4,48 @@
 # # Molecular Dynamics Analysis
 # 
 
-# **PBC**
-
+# Parameters (papermill-injected)
 # In[1]:
+tpr_file = "step5_1.tpr"
+xtc_file = "step5_1.xtc"
+ndx_input = "index_new.ndx"
+ndx_updated = "index_updated.ndx"
+gro_file = "step5_1.gro"
+protein_resids = [93, 109, 110, 170, 263, 171, 86, 262, 147, 445, 261, 318, 108]
+ligand_resnames = ["4GA", "0GA", "ROH", "PHO"]
+water_resname = "WAT"
+cutoff_occ = 10.0
+hbond_groups = "25 36"
+pbc_selection = "4 0"
+make_ndx_commands = """
+1 | 14
+r 170
+r 263
+r 109
+r 110
+18 | 19
+16 | 17
+r 14 15 22 86 90 93 97 108 109 110 111 115 118 145 146 147 148 149 168 169 170 171 172 173 174 175 177 178 195 199 200 201 202 204 228 238 242 243 244 245 246 247 248 260 261 262 263 264 265 266 273 276 277 281 283 284 286 287 291 314 315 316 317 318 319 321 357 445
+name 36 pocket
+r 93
+27 | 29
+name 38 complex
+q
+"""
 
+import subprocess
 
-get_ipython().system('echo "4 0" | gmx trjconv -s step5_1.tpr -f step5_1.xtc -n index_new.ndx -pbc mol -center -ur compact -o traj_pbc.xtc')
-
+# **PBC**
+subprocess.run(
+    f'echo "{pbc_selection}" | gmx trjconv -s {tpr_file} -f {xtc_file} -n {ndx_input} -pbc mol -center -ur compact -o traj_pbc.xtc',
+    shell=True, check=True
+)
 
 # **fit rot+trans**
-
-# In[2]:
-
-
-get_ipython().system('echo "4 0" | gmx trjconv -s step5_1.tpr -f traj_pbc.xtc -n index_new.ndx -fit rot+trans -o traj_fit.xtc')
+subprocess.run(
+    f'echo "{pbc_selection}" | gmx trjconv -s {tpr_file} -f traj_pbc.xtc -n {ndx_input} -fit rot+trans -o traj_fit.xtc',
+    shell=True, check=True
+)
 
 
 # In[1]:
@@ -44,8 +72,8 @@ q
 
 # 2. Запускаем gmx make_ndx
 process = subprocess.run(
-    ["gmx", "make_ndx", "-f", "step5_1.gro", "-n", "index_new.ndx", "-o", "index_updated.ndx"],
-    input=ndx_commands,      # Передаем наши команды
+    ["gmx", "make_ndx", "-f", gro_file, "-n", ndx_input, "-o", ndx_updated],
+    input=make_ndx_commands, # Передаем наши команды
     text=True,               # Говорим, что работаем со строками, а не байтами
     capture_output=True      # Перехватываем вывод, чтобы он не засорял фоновый терминал
 )
@@ -140,7 +168,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-def analyze_hbond_matrix(gro_file="step5_1.gro", ndx_file="hbond.ndx", xpm_file="hbmat.xpm", cutoff=20.0):
+def analyze_hbond_matrix(gro_file=gro_file, ndx_file="hbond.ndx", xpm_file="hbmat.xpm", cutoff=20.0):
     """
     Загружает результаты gmx hbond, фильтрует по occupancy, 
     рисует отсортированную хитмапу и выводит текстовый отчет.
@@ -484,7 +512,10 @@ def df_to_bond_list(df, min_occupancy=0.0):
 # In[6]:
 
 
-get_ipython().system('echo "25 36" |gmx hbond -f 4_traj_fit.xtc -s step5_1.tpr -n index_updated.ndx -num hbnum.xvg -dist hbdist.xvg -hbm hbmat.xpm -hbn hbond.ndx -nomerge')
+subprocess.run(
+    f'echo "{hbond_groups}" | gmx hbond -f 4_traj_fit.xtc -s {tpr_file} -n {ndx_updated} -num hbnum.xvg -dist hbdist.xvg -hbm hbmat.xpm -hbn hbond.ndx -nomerge',
+    shell=True, check=True
+)
 
 
 # In[7]:
@@ -508,10 +539,9 @@ import numpy as np
 import pandas as pd
 from tqdm.auto import tqdm
 
-# File paths
-tpr_file = "step5_1.tpr"
+# File paths (use centralized params)
 xtc_file = "4_traj_fit.xtc"
-ndx_file = "index_updated.ndx"
+ndx_file = ndx_updated
 
 # Load Universe
 u = mda.Universe(tpr_file, xtc_file)
@@ -567,9 +597,11 @@ for name, sel in selections.items():
 # In[10]:
 
 
-# Atom indices (0-based)
-bond1_idx = (2648, 7039) # ASH 170 OD2 - 4GA 448 O4
-bond2_idx = (4108, 7043) # TYD 263 OH - 0GA 449 H2
+# Atom selections (topology-agnostic)
+bond1_sel = "resid 170 and resname ASH and name OD2"
+bond2_sel = "resid 263 and resname TYD and name OH"
+bond1_partner = "resid 448 and resname 4GA and name O4"
+bond2_partner = "resid 449 and resname 0GA and name H2"
 
 b1_dist = []
 b2_dist = []
@@ -577,13 +609,13 @@ times = []
 
 print("Calculating bond distances...")
 for ts in tqdm(u.trajectory):
-    p1 = u.atoms[bond1_idx[0]].position
-    p2 = u.atoms[bond1_idx[1]].position
-    p3 = u.atoms[bond2_idx[0]].position
-    p4 = u.atoms[bond2_idx[1]].position
+    a1 = u.select_atoms(bond1_sel)[0]
+    a2 = u.select_atoms(bond1_partner)[0]
+    a3 = u.select_atoms(bond2_sel)[0]
+    a4 = u.select_atoms(bond2_partner)[0]
 
-    b1_dist.append(np.linalg.norm(p1 - p2))
-    b2_dist.append(np.linalg.norm(p3 - p4))
+    b1_dist.append(np.linalg.norm(a1.position - a2.position))
+    b2_dist.append(np.linalg.norm(a3.position - a4.position))
     times.append(ts.time)
 
 b1_dist = np.array(b1_dist)
@@ -599,8 +631,7 @@ times = np.array(times)
 
 
 # =================== НАСТРОЙКИ ПОД ТВОЮ СИСТЕМУ ===================
-res_protein_num = 93     # Номер твоего остатка (ASH/ASP)
-ligand_resname = "PHO"   # Имя твоего лиганда
+# Use centralized protein_resids and ligand_resnames from parameters cell
 # ==================================================================
 
 
@@ -608,18 +639,14 @@ ligand_resname = "PHO"   # Имя твоего лиганда
 
 
 # ======================= НАСТРОЙКИ ПОИСКА =======================
-# 1. Сюда просто вписывай массив номеров остатков белка, которые нужно проверить
-protein_resids = [93, 109, 110, 170, 263, 171, 86, 262, 147, 445]  
-
-# 2. Список твоих лигандов (уже забит по твоему запросу)
-ligand_resnames = ["4GA", "0GA", "ROH"]  
+# Use global protein_resids and ligand_resnames from parameters cell
 # ================================================================
 
 
 # In[13]:
 
 
-my_resids = [93, 109, 110, 170, 263, 171, 86, 262, 147, 445, 261]
+my_resids = protein_resids
 my_ligands = ["PHO"]
 
 results_df = analyze_protein_ligand_hbonds(u, my_resids, my_ligands)
@@ -628,7 +655,7 @@ results_df = analyze_protein_ligand_hbonds(u, my_resids, my_ligands)
 # In[22]:
 
 
-my_resids = [93, 109, 110, 170, 263, 171, 86, 262, 147, 445, 261,318, 108]
+my_resids = protein_resids
 my_ligands = ["4GA", "0GA", "ROH"]
 
 results_df = analyze_protein_ligand_hbonds(u, my_resids, my_ligands)
@@ -673,11 +700,7 @@ from MDAnalysis.analysis.hydrogenbonds.hbond_analysis import HydrogenBondAnalysi
 from tqdm import tqdm # Импортируем tqdm для Jupyter
 
 # ======================= НАСТРОЙКИ ПОИСКА =======================
-protein_resids = [93, 109, 110, 170, 263,108]  
-water_resname = "WAT"  # Имя остатка воды (SOL, WAT, HOH)
-
-# Порог отсечения транзитной воды (в процентах)
-cutoff_occ = 10.0 
+# Use global protein_resids, water_resname, cutoff_occ from parameters cell
 # ================================================================
 
 protein_query = " or ".join([f"resid {r}" for r in protein_resids])
@@ -803,13 +826,19 @@ plt.show()
 # In[ ]:
 
 
-get_ipython().system('echo "0" | gmx trjconv -f traj_fit.xtc -s step5_1.tpr -n index_updated.ndx -skip 20 -o trajectory.pdb')
+subprocess.run(
+    f'echo "0" | gmx trjconv -f traj_fit.xtc -s {tpr_file} -n {ndx_updated} -skip 20 -o trajectory.pdb',
+    shell=True, check=True
+)
 
 
 # In[ ]:
 
 
-get_ipython().system('echo "38" | gmx trjconv -f traj_fit.xtc -s step5_1.tpr -n index_updated.ndx -o trajectory_no_h20.pdb')
+subprocess.run(
+    f'echo "38" | gmx trjconv -f traj_fit.xtc -s {tpr_file} -n {ndx_updated} -o trajectory_no_h20.pdb',
+    shell=True, check=True
+)
 
 
 # In[29]:
