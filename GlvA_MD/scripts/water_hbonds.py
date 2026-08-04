@@ -38,6 +38,8 @@ def main():
                         help="Protein residue IDs for internal water analysis")
     parser.add_argument("--internal-water-ids", nargs="*", default=[],
                         help="Specific water resid IDs for internal water analysis")
+    parser.add_argument("--internal-occ-cutoff", type=float, default=0.0,
+                        help="Occupancy cutoff (%) for filtering internal water table")
     parser.add_argument("--outdir", default="results", help="Output directory")
     args = parser.parse_args()
 
@@ -71,6 +73,12 @@ def main():
             d_a_cutoff=args.dist_cutoff,
             d_h_a_angle_cutoff=args.angle_cutoff
         )
+        if args.internal_occ_cutoff > 0 and not df_internal.empty:
+            df_internal = df_internal[
+                df_internal["Occupancy (%)"] >= args.internal_occ_cutoff
+            ]
+            print(f"Filtered to Occupancy >= {args.internal_occ_cutoff}% "
+                  f"({len(df_internal)} bonds remain)")
         csv_path = os.path.join(args.outdir, "hbond_internal_water.csv")
         df_internal.to_csv(csv_path, index=False)
         print(f"Saved to {csv_path}")
