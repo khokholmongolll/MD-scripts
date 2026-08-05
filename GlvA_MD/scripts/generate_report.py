@@ -96,14 +96,26 @@ def main():
             for p in sorted(hbond_dist_images)
         })
 
+    # Metadynamics images — placed after the MD sections
+    meta_section_base = 6
+    image_section_map.update({
+        "meta_colvar.png": f"## {meta_section_base}. Metadynamics — CV Trajectories",
+        "meta_fes2d.png": f"## {meta_section_base + 1}. Metadynamics — 2D Free Energy Surface",
+        "meta_convergence.png": f"## {meta_section_base + 2}. Metadynamics — FES Convergence",
+    })
+
     csv_section_names = {
         "hbond_matrix.csv": "### H-Bond Matrix Table",
         "hbond_PHO.csv": "### PHO H-Bonds",
         "hbond_4GA_0GA_ROH.csv": "### 4GA / 0GA / ROH H-Bonds",
         "hbond_water.csv": "### Bulk Water H-Bonds",
         "hbond_internal_water.csv": "### Internal Water H-Bonds",
+        "meta_fes2d.csv": "### 2D FES Grid Data",
     }
-    csv_skip = {"rmsd_data.csv", "bond_distances.csv"}
+    csv_skip = {"rmsd_data.csv", "bond_distances.csv", "meta_fes2d.csv"}
+
+    # ---- Metadynamics skipped? ----
+    meta_skipped = os.path.isfile(os.path.join(outdir, ".meta_skipped"))
 
     seen_sections = set()
     for png in pngs:
@@ -133,6 +145,14 @@ def main():
             sections.append(table)
         except Exception as e:
             sections.append(f"*Could not parse {csv}: {e}*\n")
+
+    # Report that metadynamics was skipped when HILLS / COLVAR are absent
+    if meta_skipped:
+        sections.append("\n## Metadynamics\n")
+        sections.append(
+            "*Stage skipped: HILLS and/or COLVAR file "
+            "not found in the working directory.*\n"
+        )
 
     with open(report_path, "w") as f:
         f.write("\n".join(sections))

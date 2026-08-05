@@ -2,22 +2,34 @@
 set -e
 # ============================================================
 # Master Analysis Pipeline for MD Simulation (GlvA)
-# Usage: ./run_analysis.sh [--force]
+# Usage: ./path/to/run_analysis.sh [--force]
+#
+# Run from any directory — the script detects its own location
+# to find the scripts/ folder.  All input/output paths are
+# resolved relative to the current working directory unless
+# given as absolute paths.
 # ============================================================
 
+# --------------- Locate this script ---------------
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPTS_DIR="$SCRIPT_DIR/scripts"
+
 # --------------- Input files ---------------
+# These are resolved relative to the CWD.  Use absolute paths if
+# the files live outside the directory where you run the script.
 TPR="step5_1.tpr"
 GRO="step5_1.gro"
 XTC_RAW="step5_1.xtc"
 NDX_BASE="index_new.ndx"
 
 # --------------- Directories ---------------
-SCRIPTS_DIR="scripts"
 TMP_DIR="tmp"
 RESULTS_DIR="results"
 
 # --------------- Trajectory processing ---------------
-# Set TRAJ_ANALYSIS to a pre-processed .xtc to skip PBC/fit steps.
+# Point TRAJ_ANALYSIS to a pre-processed .xtc (absolute, or
+# relative to CWD).  If you re-enable Steps 1-2 below, set
+# TRAJ_ANALYSIS="$TRAJ_FIT" to use the freshly fitted trajectory.
 TRAJ_PBC="$TMP_DIR/traj_pbc.xtc"
 TRAJ_FIT="$TMP_DIR/4_traj_fit.xtc"
 TRAJ_ANALYSIS="$TRAJ_FIT"
@@ -115,8 +127,9 @@ skip_step() {
         fi
     done
 
-    # --force overrides caching
+    # --force overrides caching → always run
     if [ "$FORCE" -eq 1 ]; then
+        RAN_STEPS+=("${step_name}")
         return 1
     fi
 
@@ -124,6 +137,7 @@ skip_step() {
     for f in "${outputs[@]}"; do
         if [ ! -f "$f" ]; then
             echo "  [CACHE] Step ${step_name}: output '$f' missing, will run."
+            RAN_STEPS+=("${step_name}")
             return 1
         fi
     done
@@ -440,6 +454,76 @@ else
         --outdir "$RESULTS_DIR"
     save_step 10 \
         "$RESULTS_DIR/rmsd_data.csv" "$RESULTS_DIR/bond_distances.csv"
+fi
+
+# ============================================================
+# STEP 12  —  Metadynamics:  PLUMED sum_hills
+# STEP 13  —  Metadynamics:  Python analysis + plots
+#
+# Runs only when HILLS and COLVAR exist in CWD.
+# Skips gracefully otherwise (marker file for the report).
+# ============================================================
+
+META_FES2D="$TMP_DIR/fes2d.dat"
+META_FES_PREFIX="$TMP_DIR/fes_"
+META_BIN=100
+META_STRIDE=1000
+META_FES_PATTERN="${META_FES_PREFIX}[0-9]*"
+
+if [ -f "HILLS" ] && [ -f "COLVAR" ]; then
+
+    # --- 12: PLUMED ---
+    echo "=== Step 12: Metadynamics — PLUMED sum_hills ==="
+    if skip_step 12 \
+        "HILLS" \
+        "META_MIN=-pi,-pi" "META_MAX=pi,pi" \
+        "META_BIN=$META_BIN" "META_STRIDE=$META_STRIDE" \
+        -- "$META_FES2D"
+    then
+        :
+    else
+        plumed sum_hills --hills HILLS \
+            --min -pi,-pi --max pi,pi --bin "$META_BIN,$META_BIN" \
+            --outfile "$META_FES2D"
+        plumed sum_hills --hills HILLS \
+            --min -pi,-pi --max pi,pi --bin "$META_BIN,$META_BIN" \
+            --stride "$META_STRIDE" --outfile "$META_FES_PREFIX"
+        save_step 12 \
+            "HILLS" \
+            "META_MIN=-pi,-pi" "META_MAX=pi,pi" \
+            "META_BIN=$META_BIN" "META_STRIDE=$META_STRIDE"
+    fi
+
+    # --- 13: Python analysis ---
+    echo "=== Step 13: Metadynamics — Python analysis ==="
+    META_CONV_LIST=$(find "$TMP_DIR" -maxdepth 1 -name 'fes_[0-9]*' \
+                     -type f 2>/dev/null \
+                     | sort | xargs echo 2>/dev/null || echo "")
+
+    if skip_step 13 \
+        "COLVAR" "$META_FES2D" \
+        "CONV_FILES=$META_CONV_LIST" \
+        -- "$RESULTS_DIR/meta_colvar.png" "$RESULTS_DIR/meta_fes2d.png"
+    then
+        :
+    else
+        python3 "$SCRIPTS_DIR/meta_analysis.py" \
+            --colvar "COLVAR" \
+            --fes2d "$META_FES2D" \
+            --fes-pattern "$META_FES_PATTERN" \
+            --outdir "$RESULTS_DIR"
+        save_step 13 \
+            "COLVAR" "$META_FES2D" \
+            "CONV_FILES=$META_CONV_LIST"
+    fi
+
+    rm -f "$RESULTS_DIR/.meta_skipped"
+
+else
+    echo "=== Step 12-13: Metadynamics [SKIPPED] ==="
+    echo "  HILLS and/or COLVAR not found in working directory."
+    echo "  Place both files here to enable the metadynamics stage."
+    touch "$RESULTS_DIR/.meta_skipped"
 fi
 
 # ============================================================
