@@ -57,6 +57,7 @@ MIN_OCCUPANCY_BONDS=5.0
 PROTEIN_RESIDS="93 109 110 170 263 171 86 262 147 445 261 318 108"
 LIGANDS_PHO="450"
 LIGANDS_SUGARS="447 448 449"
+SUGAR_OCCUPANCY_CUTOFF=10.0
 
 # --------------- Water analysis ---------------
 WATER_RESNAME="WAT"
@@ -66,7 +67,7 @@ WATER_PROTEIN_RESIDS="93 109 110 170 263 108"
 # Internal water analysis (specific water residue IDs)
 INTERNAL_RESIDS="15 86 108 109 110 111 118 144 145 146 147 148 149 150 151 152 167 168 169 170 171 172 173 174 175 199 200 201 261 262 263 266 318 321 338 340 357"
 INTERNAL_WATER_IDS="518 519 528 530 531 535 536 539 541 542 547 550 552 556 558 564 566 575"
-INTERNAL_WATER_OCC_CUTOFF=5.0
+INTERNAL_WATER_OCC_CUTOFF=10.0
 
 # --------------- Bond distance atom pairs (0-based) ---------------
 BOND_PAIRS=("2647 7039" "4108 7043")
@@ -74,7 +75,19 @@ BOND_LABELS=("ASH_170_OD2--4GA_448_O4" "TYD_263_OH--0GA_449_H2")
 
 # --------------- RMSD skip groups ---------------
 # Leave empty to compute all. Example: "System Water SOL non-Protein Water_and_ions K+ Cl-"
-SKIP_RMSD_GROUPS="System Water SOL non-Protein Water_and_ions K+ Cl-"
+SKIP_RMSD_GROUPS="System Water SOL non-Protein Water_and_ions K+ Cl- MN Other Prot-Masses non-Water complex TYR_OH 0GA_H2"
+
+# --------------- PyMOL visualization (optional Step 14) ---------------
+VIS_PDB="reference.pdb"
+VIS_LIGAND_RESIDS="$LIGANDS_PHO $LIGANDS_SUGARS"
+VIS_PHO_RESIDS="$LIGANDS_PHO"
+VIS_LIG_RESIDS="447 448"
+VIS_ROH_RESIDS="449"
+VIS_INTERNAL_WATER_IDS="$INTERNAL_WATER_IDS"
+VIS_USER_RESIDS="$PROTEIN_RESIDS $WATER_PROTEIN_RESIDS $INTERNAL_RESIDS"
+VIS_WATER_RESNAME="$WATER_RESNAME"
+VIS_OUTPUT_PML="$RESULTS_DIR/visualize_scene.pml"
+VIS_OUTPUT_PNG="$RESULTS_DIR/visualization_scene.png"
 
 # ============================================================
 # Parse --force / -f flag
@@ -372,6 +385,7 @@ if skip_step 8 \
     "DIST_CUT=$HBOND_DIST_CUTOFF" \
     "ANGLE_CUT=$HBOND_ANGLE_CUTOFF" \
     "MIN_OCC=$MIN_OCCUPANCY_BONDS" \
+    "TABLE_CUTS=0.0,$SUGAR_OCCUPANCY_CUTOFF" \
     -- "$RESULTS_DIR/hbond_PHO.csv" "$RESULTS_DIR/hbond_4GA_0GA_ROH.csv"
 then
     :
@@ -387,6 +401,7 @@ else
         --dist-cutoff "$HBOND_DIST_CUTOFF" \
         --angle-cutoff "$HBOND_ANGLE_CUTOFF" \
         --min-occupancy "$MIN_OCCUPANCY_BONDS" \
+        --table-cutoffs 0.0 "$SUGAR_OCCUPANCY_CUTOFF" \
         --outdir "$RESULTS_DIR"
     save_step 8 \
         "$TPR" "$TRAJ_ANALYSIS" "$GRO" \
@@ -395,7 +410,8 @@ else
         "LIG_SUGARS=$LIGANDS_SUGARS" \
         "DIST_CUT=$HBOND_DIST_CUTOFF" \
         "ANGLE_CUT=$HBOND_ANGLE_CUTOFF" \
-        "MIN_OCC=$MIN_OCCUPANCY_BONDS"
+        "MIN_OCC=$MIN_OCCUPANCY_BONDS" \
+        "TABLE_CUTS=0.0,$SUGAR_OCCUPANCY_CUTOFF"
 fi
 
 # ============================================================
@@ -543,6 +559,65 @@ else
         --outdir "$RESULTS_DIR"
     save_step 11 \
         "RESULTS_SNAPSHOT=$RESULTS_SNAPSHOT"
+fi
+
+# ============================================================
+# STEP 14  —  Generate PyMOL visualization script (.pml)
+# ============================================================
+echo "=== Step 14: PyMOL visualization script ==="
+    if skip_step 14 \
+        "$VIS_PDB" "$TRAJ_ANALYSIS" \
+        "$RESULTS_DIR/hbond_PHO.csv" \
+        "$RESULTS_DIR/hbond_4GA_0GA_ROH.csv" \
+        "$RESULTS_DIR/hbond_water.csv" \
+        "$RESULTS_DIR/hbond_internal_water.csv" \
+        "$RESULTS_DIR/hbond_matrix.csv" \
+        "LIG_RESIDS=$VIS_LIGAND_RESIDS" \
+        "PHO_RESIDS=$VIS_PHO_RESIDS" \
+        "LIG_SUB_RESIDS=$VIS_LIG_RESIDS" \
+        "ROH_RESIDS=$VIS_ROH_RESIDS" \
+        "IW_IDS=$VIS_INTERNAL_WATER_IDS" \
+        "USR_RESIDS=$VIS_USER_RESIDS" \
+        "WAT_NAME=$VIS_WATER_RESNAME" \
+        -- "$VIS_OUTPUT_PML"
+    then
+        :
+    else
+        python3 "$SCRIPTS_DIR/visualize_results.py" \
+            --pdb "$VIS_PDB" \
+            --traj "$TRAJ_ANALYSIS" \
+            --ligand_resids "$VIS_LIGAND_RESIDS" \
+            --pho_resids "$VIS_PHO_RESIDS" \
+            --lig_resids "$VIS_LIG_RESIDS" \
+            --roh_resids "$VIS_ROH_RESIDS" \
+            --internal_water_ids "$VIS_INTERNAL_WATER_IDS" \
+            --user_resids "$VIS_USER_RESIDS" \
+            --water_resname "$VIS_WATER_RESNAME" \
+            --csv_ligand_pho "$RESULTS_DIR/hbond_PHO.csv" \
+            --csv_ligand_sugar "$RESULTS_DIR/hbond_4GA_0GA_ROH.csv" \
+            --csv_water "$RESULTS_DIR/hbond_water.csv" \
+            --csv_internal_water "$RESULTS_DIR/hbond_internal_water.csv" \
+            --csv_matrix "$RESULTS_DIR/hbond_matrix.csv" \
+            --output "$VIS_OUTPUT_PML" \
+            --png "$VIS_OUTPUT_PNG"
+        save_step 14 \
+            "$VIS_PDB" "$TRAJ_ANALYSIS" \
+            "$RESULTS_DIR/hbond_PHO.csv" \
+            "$RESULTS_DIR/hbond_4GA_0GA_ROH.csv" \
+            "$RESULTS_DIR/hbond_water.csv" \
+            "$RESULTS_DIR/hbond_internal_water.csv" \
+            "$RESULTS_DIR/hbond_matrix.csv" \
+            "LIG_RESIDS=$VIS_LIGAND_RESIDS" \
+            "PHO_RESIDS=$VIS_PHO_RESIDS" \
+            "LIG_SUB_RESIDS=$VIS_LIG_RESIDS" \
+            "ROH_RESIDS=$VIS_ROH_RESIDS" \
+            "IW_IDS=$VIS_INTERNAL_WATER_IDS" \
+            "USR_RESIDS=$VIS_USER_RESIDS" \
+            "WAT_NAME=$VIS_WATER_RESNAME"
+    fi
+if ! command -v pymol &> /dev/null; then
+    echo "  [NOTE] PyMOL is not installed. Install it to view:"
+    echo "         pymol $VIS_OUTPUT_PML"
 fi
 
 # ============================================================

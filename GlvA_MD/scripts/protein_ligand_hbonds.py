@@ -39,6 +39,9 @@ def main():
                         help="D-H-A angle cutoff (degrees)")
     parser.add_argument("--min-occupancy", type=float, default=5.0,
                         help="Min occupancy (%) for bond distance plots")
+    parser.add_argument("--table-cutoffs", nargs="*", type=float, default=[],
+                        help="Per-round occupancy cutoffs (%) for CSV table "
+                             "filtering (e.g. '0.0 10.0'). 0.0 = no filter.")
     parser.add_argument("--outdir", default="results", help="Output directory")
     args = parser.parse_args()
 
@@ -59,7 +62,7 @@ def main():
         labels.append("_".join(round_info[len(labels)]))
 
     all_bonds = {}
-    for ligs, label in zip(round_info, labels):
+    for i, (ligs, label) in enumerate(zip(round_info, labels)):
         print(f"\n{'#'*60}")
         print(f"# Round: {label}")
         print(f"# Ligands: {ligs}")
@@ -69,6 +72,14 @@ def main():
             d_a_cutoff=args.dist_cutoff,
             d_h_a_angle_cutoff=args.angle_cutoff
         )
+
+        table_cutoff = args.table_cutoffs[i] if i < len(args.table_cutoffs) else 0.0
+        if table_cutoff > 0 and not df.empty:
+            n_before = len(df)
+            df = df[df["Occupancy (%)"] >= table_cutoff]
+            print(f"Table occupancy filter ({table_cutoff}%): "
+                  f"{n_before} -> {len(df)} bonds")
+
         csv_path = os.path.join(args.outdir, f"hbond_{label}.csv")
         df.to_csv(csv_path, index=False)
         print(f"Saved table to {csv_path}")
