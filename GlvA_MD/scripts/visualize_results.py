@@ -286,26 +286,35 @@ def generate_pml(pdb_path, traj_path, ligand_resids, internal_water_resids,
             dist_name = f"hbonds_{target_sel}"
 
             E(f"# {label}")
-            C(f'cmd.select("{env_name}", "byres ({target_sel} around 5) and not {target_sel}")')
-            # Подписи здесь убраны, чтобы не дублировать
+            # Если целевая группа - вода, жестко исключаем весь растворитель из ее окружения
+            if "water" in target_sel:
+                C(f'cmd.select("{env_name}", "byres ({target_sel} around 5) and not solvent")')
+            else:
+                C(f'cmd.select("{env_name}", "byres ({target_sel} around 5) and not {target_sel}")')
+            
             C(f'cmd.distance("{dist_name}", "{target_sel}", "{env_name}", mode=2)')
             E()
-
     # ========================================================================
     # Final view
     # ========================================================================
 
     S("Final view")
     
-    # Скрываем все водороды для чистоты картинки
+    # Скрываем абсолютно все водороды для чистоты картинки
     C('cmd.hide("sticks", "elem H")')
     C('cmd.hide("lines", "elem H")')
+
+    # Включаем полярные водороды (связанные с N, O или S) только для выделенных групп
+    if selections_defined:
+        sel_names = " or ".join(selections_defined)
+        C(f'cmd.show("sticks", "({sel_names}) and elem H and (neighbor elem N+O+S)")')
 
     focus = "ligand" if "ligand" in selections_defined else \
             (selections_defined[0] if selections_defined else "system")
     C(f'cmd.zoom("{focus}", 8)')
     C(f'cmd.center("{focus}")')
     C(f'cmd.bg_color("white")')
+    C(f'cmd.show("sticks", "resn ROH or PHO or LIG")')
     E()
 
     if output_png:
@@ -327,6 +336,7 @@ def main():
         description="Generate a hardcoded PyMOL .pml script from MD pipeline outputs."
     )
     parser.add_argument("--pdb", required=True, help="PDB topology file")
+    parser.add_argument("--exclude_resids", default="", help="Остатки, которые нужно исключить из relevant_residues")
     parser.add_argument("--traj", default="", help="Trajectory file (.xtc)")
     parser.add_argument("--ligand_resids", default="", help="Space-separated ligand residue IDs")
     parser.add_argument("--pho_resids", default="", help="Explicit PHO resids")
@@ -350,6 +360,7 @@ def main():
     roh_resids = set(args.roh_resids.split()) if args.roh_resids.strip() else set()
     internal_water_resids = set(args.internal_water_ids.split()) if args.internal_water_ids.strip() else set()
     user_resids = set(args.user_resids.split()) if args.user_resids.strip() else set()
+    exclude_resids = set(args.exclude_resids.split()) if args.exclude_resids.strip() else set()
 
     csv_protein_resids = set()
     csv_water_resids = set()
@@ -375,7 +386,7 @@ def main():
         mat_ps = parse_hbond_matrix_csv(args.csv_matrix)
         csv_protein_resids |= mat_ps
 
-    all_relevant_resids = user_resids | csv_protein_resids | csv_internal_protein_resids
+    all_relevant_resids = (user_resids - exclude_resids | csv_protein_resids | csv_internal_protein_resids)
 
     pml_content = generate_pml(
         pdb_path=args.pdb,

@@ -5,8 +5,9 @@ Automated, modular Molecular Dynamics analysis pipeline for GROMACS trajectories
 ## Directory Structure
 
 ```
-cryst_wat_opc_ff19SB_5_step/
+GlvA_MD/
 ├── run_analysis.sh              ← Master orchestrator (the only script you run)
+├── analysis.conf                 ← Input files and analysis settings
 ├── scripts/
 │   ├── utils.py                 ← Shared library: all parsers, analysis functions, plotters
 │   ├── hbond_matrix.py          ← GROMACS hbond .xpm → heatmap + occupancy table
@@ -15,21 +16,25 @@ cryst_wat_opc_ff19SB_5_step/
 │   ├── protein_ligand_hbonds.py ← MDAnalysis: protein↔ligand H-bonds + distance profiles
 │   ├── water_hbonds.py          ← Bulk water + internal water H-bond analysis
 │   ├── combined_plots.py        ← Merged RMSD + bond distance stacked figure
-│   └── generate_report.py       ← Assembles all outputs → analysis_report.md
+│   ├── generate_report.py       ← Assembles all outputs → analysis_report.md
+│   ├── visualize_results.py     ← Generates a hardcoded PyMOL .pml scene script
+│   ├── pull_distance.py         ← COM pulling distance: thermal fluctuation analysis
+│   └── pull_force.py            ← COM pulling force: Savitzky-Golay smoothing + work
 ├── tmp/                         ← Intermediate files (.xtc, .ndx, .xpm, .xvg, .state)
-└── results/                     ← Final outputs (.png, .csv, analysis_report.md)
+└── results/                     ← Final outputs (.png, .csv, .pml, analysis_report.md)
 ```
 
 ## Quick Start
 
 ```bash
+ # Edit analysis.conf in the working directory before the first run.
 ./run_analysis.sh           # normal run (skips cached steps)
 ./run_analysis.sh --force   # force re-run of every step
 ```
 
 ## Pipeline Overview
 
-The pipeline runs **11 steps** sequentially. Each step's outputs feed into downstream steps.
+The pipeline runs **14 steps** sequentially (Steps 1–2 are commented out by default; Steps 12–13 run only if metadynamics input files exist; Steps 15–16 run only if pulling XVG files exist). Each step's outputs feed into downstream steps.
 
 ```
  ┌─────────────────────┐
@@ -51,35 +56,48 @@ The pipeline runs **11 steps** sequentially. Each step's outputs feed into downs
  ┌────────▼────────────┐
  │ Step 5              │  Python: parse .xpm, filter by occupancy, draw heatmap
  └───────────┬─────────┘
-             │ hbond_matrix.png, hbond_matrix.csv
+            │ hbond_matrix.png, hbond_matrix.csv
  ┌────────────▼────────────┐
  │ Step 6                  │  Python (MDAnalysis): RMSD for every index group
  └───────────┬─────────────┘
-             │ rmsd_overlay.png, rmsd_subplots.png, rmsd_data.csv
+            │ rmsd_overlay.png, rmsd_subplots.png, rmsd_data.csv
  ┌────────────▼────────────┐
  │ Step 7                  │  Python (MDAnalysis): bond distance time-series
  └───────────┬─────────────┘
-             │ bond_distances.png, bond_distances.csv
+            │ bond_distances.png, bond_distances.csv
  ┌────────────▼────────────┐
  │ Step 8                  │  Python (MDAnalysis): Protein↔PHO + Protein↔sugars H-bonds
  └───────────┬─────────────┘
-             │ hbond_PHO.csv, hbond_4GA_0GA_ROH.csv, hbond_dist_*.png
+            │ hbond_PHO.csv, hbond_4GA_0GA_ROH.csv, hbond_dist_*.png
  ┌────────────▼────────────┐
  │ Step 9                  │  Python (MDAnalysis): bulk + internal water H-bonds
  └───────────┬─────────────┘
-             │ hbond_water.csv, hbond_internal_water.csv
+            │ hbond_water.csv, hbond_internal_water.csv
  ┌────────────▼────────────┐
  │ Step 10                 │  Python: stacked figure from RMSD + bond distance CSVs
  └───────────┬─────────────┘
-             │ combined_plots.png
+            │ combined_plots.png
  ┌────────────▼────────────┐
  │ Step 11                 │  Python: aggregate all .csv + .png → analysis_report.md
+ └───────────┬─────────────┘
+            │ analysis_report.md
+ ┌────────────▼────────────┐
+ │ Step 14                 │  Python: generate PyMOL .pml scene script from pipeline CSVs
+ └───────────┬─────────────┘
+            │ visualize_scene.pml
+ ┌────────────▼────────────┐
+ │ Step 15 (if pullx.xvg)  │  Python: COM distance thermal fluctuation analysis
+ └───────────┬─────────────┘
+            │ pull_distance.png
+ ┌────────────▼────────────┐
+ │ Step 16 (if pullf.xvg)  │  Python: COM force Savitzky-Golay smoothing + stats
  └─────────────────────────┘
+            │ pull_force.png
 ```
 
 ## Configuring the Pipeline
 
-All configuration lives at the top of **`run_analysis.sh`**. Edit any variable and re-run — only the affected steps will recalculate.
+All manually entered settings live in **`analysis.conf`** in the current working directory. Edit the file and re-run; only the affected steps will recalculate. The file uses Bash assignments: quote values containing spaces, and use Bash arrays for `BOND_PAIRS` and `BOND_LABELS`. Paths in the file are resolved relative to the directory where you launch the script. If you run the script from another directory, place a copy of `analysis.conf` there with that run's settings; the script reports an error if it is missing.
 
 ### Key Variables
 
@@ -88,11 +106,12 @@ All configuration lives at the top of **`run_analysis.sh`**. Edit any variable a
 | `TPR`, `GRO`, `XTC_RAW` | `step5_1.*` | Input topology, coordinates, raw trajectory |
 | `NDX_BASE` | `index_new.ndx` | Base GROMACS index file |
 | `TRAJ_ANALYSIS` | `$TMP_DIR/4_traj_fit.xtc` | Pre-processed trajectory for analysis |
-| `HBOND_GROUP_A`, `HBOND_GROUP_B` | `25`, `36` | Groups for `gmx hbond` |
+| `HBOND_GROUP_A`, `HBOND_GROUP_B` | `24`, `33` | Groups for `gmx hbond` |
 | `OCCUPANCY_CUTOFF` | `20.0` | Occupancy cutoff (%) for hbond matrix filtering |
 | `HBOND_DIST_CUTOFF` | `3.5` | Donor-Acceptor distance (Å) |
 | `HBOND_ANGLE_CUTOFF` | `150` | D-H-A angle (degrees) |
 | `MIN_OCCUPANCY_BONDS` | `5.0` | Min occupancy (%) for distance profile plots |
+| `SUGAR_OCCUPANCY_CUTOFF` | `10.0` | Occupancy cutoff (%) for sugar H-bond CSV table filtering |
 | `PROTEIN_RESIDS` | `93 109 ...` | Residue IDs for protein-ligand H-bond analysis |
 | `LIGANDS_PHO` | `450` | PHO ligand resname(s) |
 | `LIGANDS_SUGARS` | `447 448 449` | Sugar ligand resnames |
@@ -100,10 +119,39 @@ All configuration lives at the top of **`run_analysis.sh`**. Edit any variable a
 | `WATER_CUTOFF_OCC` | `10.0` | Occupancy cutoff (%) for bulk water table |
 | `INTERNAL_RESIDS` | (large list) | Pocket residues for internal water analysis |
 | `INTERNAL_WATER_IDS` | `518 519 ...` | Specific water residue IDs |
-| `INTERNAL_WATER_OCC_CUTOFF` | `5.0` | Occupancy cutoff (%) for internal water table |
+| `INTERNAL_WATER_OCC_CUTOFF` | `10.0` | Occupancy cutoff (%) for internal water table |
 | `BOND_PAIRS` | `(2647 7039) (4108 7043)` | 0-based atom index pairs |
 | `BOND_LABELS` | `ASH_170_OD2...`, `TYD_263_OH...` | Labels for bond distance plots |
 | `SKIP_RMSD_GROUPS` | `System Water SOL ...` | Index groups to exclude from RMSD |
+
+### PyMOL Visualization (Step 14)
+
+| Variable | Default | Description |
+|---|---|---|
+| `VIS_PDB` | `reference.pdb` | PDB topology for PyMOL (convert from .gro with `gmx editconf`) |
+| `VIS_PHO_RESIDS` | `$LIGANDS_PHO` | PHO ligand residue IDs |
+| `VIS_LIG_RESIDS` | `447 448` | LIG (4GA+0GA) residue IDs |
+| `VIS_ROH_RESIDS` | `449` | ROH residue ID |
+| `VIS_LIGAND_RESIDS` | (combined) | All ligand residue IDs |
+| `VIS_INTERNAL_WATER_IDS` | `$INTERNAL_WATER_IDS` | Internal water residue IDs |
+| `VIS_USER_RESIDS` | (combined) | All user-defined protein residues |
+| `VIS_WATER_RESNAME` | `WAT` | Water residue name |
+| `VIS_OUTPUT_PML` | `results/visualize_scene.pml` | Generated PyMOL script |
+| `VIS_OUTPUT_PNG` | `results/visualization_scene.png` | Optional PNG (written as comment in .pml) |
+
+### COM Pulling Analysis (Steps 15–16, conditional)
+
+These steps run only when `step5_1_pullx.xvg` and/or `step5_1_pullf.xvg` are present in the working directory.
+
+| Variable | Default | Description |
+|---|---|---|
+| `PULLX_FILE` | `step5_1_pullx.xvg` | GROMACS pullx output (COM distance) |
+| `PULLF_FILE` | `step5_1_pullf.xvg` | GROMACS pullf output (COM force) |
+| `PULL_TEMPERATURE` | `300` | Temperature (K) for energy interpretation |
+| `PULL_FLAT_BOTTOM` | `0.45` | Flat-bottom potential boundary (nm) |
+| `PULL_SMOOTH_WINDOW` | `51` | Savitzky-Golay window size (odd) |
+| `PULL_SMOOTH_POLYORDER` | `3` | Savitzky-Golay polynomial order |
+| `PULL_VELOCITY` | (empty) | Pulling velocity in nm/ps (for work estimation; skip if empty) |
 
 ### Skipping PBC/Fit Steps
 
@@ -136,12 +184,18 @@ Each step's dependencies include the *output files of upstream steps*. If an ups
 - Step 5's variable dependency `OCC_CUTOFF=30.0` differs from saved `OCC_CUTOFF=20.0` → Step 5 re-runs
 - Steps 6–9 are unaffected (they don't depend on `OCCUPANCY_CUTOFF` or Step 5's outputs)
 - Step 11 re-runs because its `RESULTS_SNAPSHOT` (a hash of all results/ files) changed
+- Step 14 re-runs because `hbond_matrix.csv` changed
+
+**Example**: Change `SUGAR_OCCUPANCY_CUTOFF` from 10.0 to 15.0.
+- Step 8's dependency `TABLE_CUTS=0.0,15.0` differs → Step 8 re-runs
+- Step 11 re-runs (results snapshot changed)
+- Step 14 re-runs (sugar CSV changed)
 
 **Example**: Change `HBOND_DIST_CUTOFF` from 3.5 to 3.0.
 - Step 8's dependency `DIST_CUT=3.0` differs → Step 8 re-runs
 - Step 9's dependency `W_DIST=3.0` differs → Step 9 re-runs
 - Steps 3–7 are unaffected
-- Step 11 re-runs
+- Step 11 and Step 14 re-run
 
 Use `--force` to bypass all caching:
 
@@ -203,12 +257,13 @@ Shared module imported by all Python analysis scripts. Contains:
 
 ### `scripts/protein_ligand_hbonds.py`
 
-**Dependencies**: `--tpr`, `--traj`, `--gro`, `--residues`, `--ligands-rounds [...]`, `--dist-cutoff`, `--angle-cutoff`, `--min-occupancy`
+**Dependencies**: `--tpr`, `--traj`, `--gro`, `--residues`, `--ligands-rounds [...]`, `--round-labels [...]`, `--dist-cutoff`, `--angle-cutoff`, `--min-occupancy`, `--table-cutoffs [...]`
 
 1. Loads MDAnalysis `Universe`.
 2. For each `--ligands-rounds`, runs `analyze_protein_ligand_hbonds` (two rounds: protein→ligand + ligand→protein).
-3. Saves occupancy tables as `hbond_<label>.csv`.
-4. For each ligand round, filters bonds above `--min-occupancy`, computes distance profiles via `calculate_distances_by_indices`, and generates individual bond distance plots.
+3. Applies per-round occupancy filter if `--table-cutoffs` value > 0 for that round.
+4. Saves filtered occupancy tables as `hbond_<label>.csv`.
+5. For each ligand round, filters bonds above `--min-occupancy`, computes distance profiles via `calculate_distances_by_indices`, and generates individual bond distance plots.
 
 ### `scripts/water_hbonds.py`
 
@@ -236,6 +291,48 @@ Shared module imported by all Python analysis scripts. Contains:
 5. Skips `rmsd_data.csv`, `bond_distances.csv`, and `combined_plots.png` (these are intermediate data, not report tables).
 6. Outputs `analysis_report.md` — open it in any Markdown viewer.
 
+### `scripts/visualize_results.py`
+
+**Dependencies**: `--pdb`, `--traj`, `--ligand_resids`, `--pho_resids`, `--lig_resids`, `--roh_resids`, `--internal_water_ids`, `--user_resids`, `--water_resname`, `--csv_*`, `--output`
+
+This is a **plain Python 3 script** — no PyMOL installation needed to run it. It does not execute PyMOL commands; instead it writes them into a self-contained `.pml` file.
+
+1. Parses all pipeline CSVs to extract residue IDs for ligands, internal waters, unique waters, and protein residues.
+2. Combines CSV-extracted IDs with user-defined lists into PyMOL selection expressions.
+3. Generates a hardcoded `visualize_scene.pml` script containing:
+   - `cmd.load` / `cmd.load_traj` for structure and trajectory
+   - `cmd.hide("everything", "solvent")` and `cmd.hide("everything", "resi 451-517")`
+   - Named selections: `ligand`, `PHO`, `LIG`, `ROH`, `internal_water`, `unique_water`, `relevant_residues` — all shown as sticks with distinct colors
+   - H-bond distance objects (mode=2) for ligand↔env, internal water↔env, and unique water↔env using the guardrail syntax (`byres ... around 5`, `h_bond_max_angle=40`, `h_bond_cutoff_center=3.6`)
+   - Final view: zoom, center, white background, orient
+4. Writes the `.pml` to `results/`.
+
+To view the scene:
+```bash
+pymol results/visualize_scene.pml
+```
+
+### `scripts/pull_distance.py`
+
+**Dependencies**: `--pullx`, `--temperature`, `--flat-bottom`, `--outdir`
+
+Runs only when `step5_1_pullx.xvg` exists (conditional step).
+
+1. Parses the GROMACS pullx XVG file to extract COM distance over time.
+2. Computes thermal fluctuation statistics: mean, min/max, RMSF amplitude, and effective environmental stiffness (k_eff = k_B T / variance).
+3. Generates `pull_distance.png` — distance vs time with mean line, ±1σ fluctuation band, and flat-bottom boundary marker.
+
+### `scripts/pull_force.py`
+
+**Dependencies**: `--pullf`, `--smooth-window`, `--smooth-polyorder`, `--pulling-velocity`, `--outdir`
+
+Runs only when `step5_1_pullf.xvg` exists (conditional step).
+
+1. Parses the GROMACS pullf XVG file to extract COM pulling force over time.
+2. Applies a Savitzky-Golay filter to smooth the noisy force curve.
+3. Computes force statistics (mean, max, min, std) and optionally estimates mechanical work if `--pulling-velocity` is provided.
+4. Generates `pull_force.png` — raw force (grey) + smoothed curve (blue) + max force marker.
+
 ## Output Files
 
 ### `results/` (final outputs)
@@ -250,13 +347,16 @@ Shared module imported by all Python analysis scripts. Contains:
 | `rmsd_data.csv` | Raw RMSD values |
 | `bond_distances.png` | Bond distance time-series |
 | `bond_distances.csv` | Raw bond distance values |
-| `hbond_PHO.csv` | PHO ligand H-bond table |
-| `hbond_4GA_0GA_ROH.csv` | Sugar ligand H-bond table |
+| `hbond_PHO.csv` | PHO ligand H-bond table (all bonds, unfiltered) |
+| `hbond_4GA_0GA_ROH.csv` | Sugar ligand H-bond table (filtered by `SUGAR_OCCUPANCY_CUTOFF`) |
 | `hbond_dist_PHO.png` | PHO bond distance dynamics |
 | `hbond_dist_4GA_0GA_ROH.png` | Sugar bond distance dynamics |
 | `hbond_water.csv` | Bulk water H-bond table |
 | `hbond_internal_water.csv` | Internal water H-bond table |
 | `combined_plots.png` | Stacked RMSD + bond distances |
+| `visualize_scene.pml` | PyMOL scene script (run with `pymol results/visualize_scene.pml`) |
+| `pull_distance.png` | COM pulling distance thermal fluctuation plot (conditional) |
+| `pull_force.png` | COM pulling force analysis plot (conditional) |
 
 ### `tmp/` (intermediate, safe to delete)
 
@@ -270,13 +370,17 @@ GROMACS outputs (`.xvg`, `.xpm`, `.ndx`), processed trajectories (`.xtc`), and `
   - `numpy`, `pandas`
   - `matplotlib`, `seaborn`
   - `tqdm`
+- **PyMOL** — optional, only needed to view the generated `.pml` scene script (the generator runs with plain Python 3)
 
 All analysis scripts set `matplotlib.use("Agg")` — they run headless, no display needed.
 
 ## Customisation
 
-1. **Change a cutoff**: edit the variable at the top of `run_analysis.sh`, re-run. Only the step that depends on it re-runs.
+1. **Change a cutoff**: edit the variable in `analysis.conf`, re-run. Only the step that depends on it re-runs.
 2. **Add a new residue to the H-bond analysis**: add it to `PROTEIN_RESIDS`, re-run. Step 8 re-runs.
-3. **Change bond distance pairs**: edit `BOND_PAIRS` and `BOND_LABELS`, re-run. Step 7 re-runs.
-4. **Swap the trajectory**: point `TRAJ_ANALYSIS` to a different `.xtc`, re-run. Steps 4–11 re-run.
-5. **Enable PBC/fit**: uncomment Steps 1–2, set `TRAJ_ANALYSIS="$TRAJ_FIT"`. Full pipeline from raw `.xtc`.
+3. **Change sugar report occupancy filter**: edit `SUGAR_OCCUPANCY_CUTOFF`, re-run. Step 8 re-runs.
+4. **Change bond distance pairs**: edit `BOND_PAIRS` and `BOND_LABELS`, re-run. Step 7 re-runs.
+5. **Swap the trajectory**: point `TRAJ_ANALYSIS` to a different `.xtc`, re-run. Steps 4–11, 14 re-run.
+6. **Enable PBC/fit**: uncomment Steps 1–2, set `TRAJ_ANALYSIS="$TRAJ_FIT"`. Full pipeline from raw `.xtc`.
+7. **Change PyMOL scene configuration**: edit `VIS_*` variables in `analysis.conf`. Step 14 re-runs.
+8. **Add/remove residues from the PyMOL scene**: edit `VIS_PHO_RESIDS`, `VIS_LIG_RESIDS`, `VIS_ROH_RESIDS`, `VIS_USER_RESIDS`, or `VIS_INTERNAL_WATER_IDS`. Step 14 re-runs.

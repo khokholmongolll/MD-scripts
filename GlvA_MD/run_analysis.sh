@@ -14,80 +14,14 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$SCRIPT_DIR/scripts"
 
-# --------------- Input files ---------------
-# These are resolved relative to the CWD.  Use absolute paths if
-# the files live outside the directory where you run the script.
-TPR="step5_1.tpr"
-GRO="step5_1.gro"
-XTC_RAW="step5_1.xtc"
-NDX_BASE="index_new.ndx"
-
-# --------------- Directories ---------------
-TMP_DIR="tmp"
-RESULTS_DIR="results"
-
-# --------------- Trajectory processing ---------------
-# Point TRAJ_ANALYSIS to a pre-processed .xtc (absolute, or
-# relative to CWD).  If you re-enable Steps 1-2 below, set
-# TRAJ_ANALYSIS="$TRAJ_FIT" to use the freshly fitted trajectory.
-TRAJ_PBC="$TMP_DIR/traj_pbc.xtc"
-TRAJ_FIT="$TMP_DIR/4_traj_fit.xtc"
-TRAJ_ANALYSIS="$TRAJ_FIT"
-
-# --------------- Output files ---------------
-NDX_UPDATED="$TMP_DIR/index_updated.ndx"
-NDX_CMD_FILE="$TMP_DIR/ndx_commands.txt"
-
-# --------------- GROMACS groups ---------------
-CENTER_GROUP=4        # Backbone
-OUTPUT_GROUP=0         # System
-FIT_GROUP=4            # Backbone
-
-# --------------- H-bond matrix (gmx hbond) ---------------
-HBOND_GROUP_A=25       # M6P in index_updated.ndx
-HBOND_GROUP_B=36       # pocket  in index_updated.ndx
-
-# --------------- Analysis parameters ---------------
-OCCUPANCY_CUTOFF=20.0
-HBOND_DIST_CUTOFF=3.5
-HBOND_ANGLE_CUTOFF=150
-MIN_OCCUPANCY_BONDS=5.0
-
-# --------------- Protein residues for MDAnalysis H-bond ---------------
-PROTEIN_RESIDS="93 109 110 170 263 171 86 262 147 445 261 318 108"
-LIGANDS_PHO="450"
-LIGANDS_SUGARS="447 448 449"
-SUGAR_OCCUPANCY_CUTOFF=10.0
-
-# --------------- Water analysis ---------------
-WATER_RESNAME="WAT"
-WATER_CUTOFF_OCC=10.0
-WATER_PROTEIN_RESIDS="93 109 110 170 263 108"
-
-# Internal water analysis (specific water residue IDs)
-INTERNAL_RESIDS="15 86 108 109 110 111 118 144 145 146 147 148 149 150 151 152 167 168 169 170 171 172 173 174 175 199 200 201 261 262 263 266 318 321 338 340 357"
-INTERNAL_WATER_IDS="518 519 528 530 531 535 536 539 541 542 547 550 552 556 558 564 566 575"
-INTERNAL_WATER_OCC_CUTOFF=10.0
-
-# --------------- Bond distance atom pairs (0-based) ---------------
-BOND_PAIRS=("2647 7039" "4108 7043")
-BOND_LABELS=("ASH_170_OD2--4GA_448_O4" "TYD_263_OH--0GA_449_H2")
-
-# --------------- RMSD skip groups ---------------
-# Leave empty to compute all. Example: "System Water SOL non-Protein Water_and_ions K+ Cl-"
-SKIP_RMSD_GROUPS="System Water SOL non-Protein Water_and_ions K+ Cl- MN Other Prot-Masses non-Water complex TYR_OH 0GA_H2"
-
-# --------------- PyMOL visualization (optional Step 14) ---------------
-VIS_PDB="reference.pdb"
-VIS_LIGAND_RESIDS="$LIGANDS_PHO $LIGANDS_SUGARS"
-VIS_PHO_RESIDS="$LIGANDS_PHO"
-VIS_LIG_RESIDS="447 448"
-VIS_ROH_RESIDS="449"
-VIS_INTERNAL_WATER_IDS="$INTERNAL_WATER_IDS"
-VIS_USER_RESIDS="$PROTEIN_RESIDS $WATER_PROTEIN_RESIDS $INTERNAL_RESIDS"
-VIS_WATER_RESNAME="$WATER_RESNAME"
-VIS_OUTPUT_PML="$RESULTS_DIR/visualize_scene.pml"
-VIS_OUTPUT_PNG="$RESULTS_DIR/visualization_scene.png"
+# --------------- Configuration from working directory ---------------
+CONFIG_FILE="$PWD/analysis.conf"
+if [ ! -f "$CONFIG_FILE" ]; then
+    echo "[ERROR] Configuration file not found: $CONFIG_FILE" >&2
+    exit 1
+fi
+# shellcheck source=analysis.conf
+source "$CONFIG_FILE"
 
 # ============================================================
 # Parse --force / -f flag
@@ -586,6 +520,7 @@ echo "=== Step 14: PyMOL visualization script ==="
         python3 "$SCRIPTS_DIR/visualize_results.py" \
             --pdb "$VIS_PDB" \
             --traj "$TRAJ_ANALYSIS" \
+            --exclude_resids "$INTERNAL_RESIDS" \
             --ligand_resids "$VIS_LIGAND_RESIDS" \
             --pho_resids "$VIS_PHO_RESIDS" \
             --lig_resids "$VIS_LIG_RESIDS" \
@@ -621,6 +556,71 @@ if ! command -v pymol &> /dev/null; then
 fi
 
 # ============================================================
+# STEP 15  —  COM pulling distance analysis (conditional)
+# ============================================================
+if [ -f "$PULLX_FILE" ]; then
+    echo "=== Step 15: COM pulling distance analysis ==="
+    PULL_VEL_ARG=""
+    [ -n "$PULL_VELOCITY" ] && PULL_VEL_ARG="--pulling-velocity $PULL_VELOCITY"
+
+    if skip_step 15 \
+        "$PULLX_FILE" \
+        "PULL_T=$PULL_TEMPERATURE" \
+        "PULL_FB=$PULL_FLAT_BOTTOM" \
+        -- "$RESULTS_DIR/pull_distance.png"
+    then
+        :
+    else
+        python3 "$SCRIPTS_DIR/pull_distance.py" \
+            --pullx "$PULLX_FILE" \
+            --temperature "$PULL_TEMPERATURE" \
+            --flat-bottom "$PULL_FLAT_BOTTOM" \
+            --outdir "$RESULTS_DIR"
+        save_step 15 \
+            "$PULLX_FILE" \
+            "PULL_T=$PULL_TEMPERATURE" \
+            "PULL_FB=$PULL_FLAT_BOTTOM"
+    fi
+else
+    echo "=== Step 15: COM pulling distance [SKIPPED] ==="
+    echo "  $PULLX_FILE not found in working directory."
+fi
+
+# ============================================================
+# STEP 16  —  COM pulling force analysis (conditional)
+# ============================================================
+if [ -f "$PULLF_FILE" ]; then
+    echo "=== Step 16: COM pulling force analysis ==="
+    PULL_VEL_ARG=""
+    [ -n "$PULL_VELOCITY" ] && PULL_VEL_ARG="--pulling-velocity $PULL_VELOCITY"
+
+    if skip_step 16 \
+        "$PULLF_FILE" \
+        "PULL_WIN=$PULL_SMOOTH_WINDOW" \
+        "PULL_POLY=$PULL_SMOOTH_POLYORDER" \
+        "PULL_VEL=$PULL_VELOCITY" \
+        -- "$RESULTS_DIR/pull_force.png"
+    then
+        :
+    else
+        python3 "$SCRIPTS_DIR/pull_force.py" \
+            --pullf "$PULLF_FILE" \
+            --smooth-window "$PULL_SMOOTH_WINDOW" \
+            --smooth-polyorder "$PULL_SMOOTH_POLYORDER" \
+            $PULL_VEL_ARG \
+            --outdir "$RESULTS_DIR"
+        save_step 16 \
+            "$PULLF_FILE" \
+            "PULL_WIN=$PULL_SMOOTH_WINDOW" \
+            "PULL_POLY=$PULL_SMOOTH_POLYORDER" \
+            "PULL_VEL=$PULL_VELOCITY"
+    fi
+else
+    echo "=== Step 16: COM pulling force [SKIPPED] ==="
+    echo "  $PULLF_FILE not found in working directory."
+fi
+
+# ============================================================
 echo ""
 echo "=============================================="
 echo " Pipeline complete!"
@@ -629,4 +629,5 @@ echo " Run     : ${#RAN_STEPS[@]} steps  (${RAN_STEPS[*]})"
 echo " Report  : $RESULTS_DIR/analysis_report.md"
 echo " Figures : $RESULTS_DIR/*.png"
 echo " Tables  : $RESULTS_DIR/*.csv"
+echo " Scene   : $VIS_OUTPUT_PML"
 echo "=============================================="
